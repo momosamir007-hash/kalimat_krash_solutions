@@ -1,30 +1,30 @@
 import os
-import fitz  # مكتبة PyMuPDF
+import fitz  # PyMuPDF
 import io
-import gdown  # مكتبة التحميل من درايف
+import gdown
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 
-# --- مكتبات السيرفر الوهمي ---
+# --- مكتبات السيرفر الوهمي لإبقاء البوت حياً على Render ---
 from threading import Thread
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 # ---------------------------------------------------------
-# المتغيرات الأساسية
+# الإعدادات الأساسية
 # ---------------------------------------------------------
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 PDF_FILE_NAME = "kalimat_krash_solutions.pdf"
 FILE_ID = "1ca7Qsgq5FKtPNpx8mAyUFMD6NCvSQ5g7"
 
 # ---------------------------------------------------------
-# 1. كود السيرفر الوهمي
+# 1. السيرفر الوهمي (Keep Alive)
 # ---------------------------------------------------------
 class DummyHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.send_header('Content-type', 'text/plain')
         self.end_headers()
-        self.wfile.write(b"Bot is running successfully on Render Free Tier!")
+        self.wfile.write(b"Bot is live!")
 
 def run_dummy_server():
     port = int(os.environ.get("PORT", 10000))
@@ -37,137 +37,93 @@ def keep_alive():
     t.start()
 
 # ---------------------------------------------------------
-# 2. دالة التحميل
+# 2. تحميل الملف
 # ---------------------------------------------------------
-def download_pdf_from_drive():
+def download_pdf():
     if not os.path.exists(PDF_FILE_NAME):
-        print("جاري تحميل ملف الحلول من Google Drive...")
         url = f'https://drive.google.com/uc?id={FILE_ID}'
         gdown.download(url, PDF_FILE_NAME, quiet=False)
 
 # ---------------------------------------------------------
-# 3. دوال البوت التفاعلية
+# 3. منطق البوت التفاعلي
 # ---------------------------------------------------------
-async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    welcome_message = (
-        "مرحباً بك في بوت حلول كلمات كراش! 🧩\n\n"
-        "أرسل لي **رقم المرحلة** (مثلاً: 150) وسأرسل لك صورتها.\n"
-        "يمكنك استخدام الأزرار أسفل الصورة للتقليب إذا احتجت لذلك."
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "مرحباً بك! أرسل رقم المرحلة (مثال: 150) وسأعطيك الحل.\n"
+        "استخدم الأزرار ⬅️ ➡️ للتصحيح إذا كان هناك فرق في الصفحات."
     )
-    await update.message.reply_text(welcome_message)
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_text = update.message.text.strip()
-
-    if not user_text.isdigit():
-        await update.message.reply_text("❌ يرجى إرسال أرقام فقط. مثال: 150")
+async def handle_msg(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text.strip()
+    if not text.isdigit():
+        await update.message.reply_text("الرجاء إرسال أرقام فقط.")
         return
 
-    level_number = int(user_text)
-
-    if not os.path.exists(PDF_FILE_NAME):
-        await update.message.reply_text("❌ النظام يقوم حالياً بتهيئة الملف. جرب بعد دقيقة.")
-        return
-
+    lvl = int(text)
     try:
-        await context.bot.send_chat_action(chat_id=update.effective_chat.id, action='upload_photo')
-
         doc = fitz.open(PDF_FILE_NAME)
-        total_pages = len(doc)
-
-        # المعادلة الرياضية لتقريب الصفحة بناءً على الفروقات
-        # كل 33 صفحة يوجد صفحة إضافية تقريباً
-        estimated_page = level_number + int(level_number / 33)
-
-        # التأكد من عدم تجاوز عدد صفحات الملف
-        if estimated_page >= total_pages:
-            estimated_page = total_pages - 1
-
-        page = doc.load_page(estimated_page)
-        pix = page.get_pixmap(dpi=150)
-        img_bytes = pix.tobytes("png")
-        photo_stream = io.BytesIO(img_bytes)
+        # المعادلة التقريبية لتعويض النقص (صفحة إضافية كل 34 مرحلة)
+        idx = lvl + int(lvl / 34)
         
-        # إنشاء أزرار التقليب التفاعلية
-        keyboard = [
-            [
-                InlineKeyboardButton("⬅️ السابق", callback_data=f"page_{estimated_page - 1}"),
-                InlineKeyboardButton("التالي ➡️", callback_data=f"page_{estimated_page + 1}")
-            ]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
+        if idx >= len(doc): idx = len(doc) - 1
 
+        page = doc.load_page(idx)
+        pix = page.get_pixmap(dpi=150)
+        img = io.BytesIO(pix.tobytes("png"))
+
+        # أزرار التحكم
+        kb = [[
+            InlineKeyboardButton("⬅️ السابق", callback_data=f"p_{idx-1}"),
+            InlineKeyboardButton("التالي ➡️", callback_data=f"p_{idx+1}")
+        ]]
+        
         await update.message.reply_photo(
-            photo=photo_stream, 
-            caption=f"🔍 تقريب لنتيجة البحث عن المرحلة {level_number}\n(استخدم الأزرار للتقليب إذا لم تكن الصورة دقيقة)",
-            reply_markup=reply_markup
+            photo=img, 
+            caption=f"حل تقريبي للمرحلة {lvl}\n(استخدم الأزرار للتنقل الدقيق)",
+            reply_markup=InlineKeyboardMarkup(kb)
         )
         doc.close()
-
     except Exception as e:
-        print(f"Error: {e}")
-        await update.message.reply_text("❌ حدث خطأ فني أثناء استخراج الصورة.")
+        await update.message.reply_text(f"خطأ: {e}")
 
-async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """التعامل مع ضغطات الأزرار لتحديث الصورة"""
+async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()  # إخفاء دائرة التحميل في زر تليجرام
+    await query.answer()
     
-    # استخراج رقم الصفحة من الزر المكيوس عليه (مثال: page_52)
-    data = query.data
-    page_index = int(data.split("_")[1])
-
+    idx = int(query.data.split("_")[1])
     try:
         doc = fitz.open(PDF_FILE_NAME)
-        total_pages = len(doc)
-        
-        # تجنب الأخطاء إذا تجاوزنا الصفحات
-        if page_index < 0 or page_index >= total_pages:
-            doc.close()
-            return
+        if idx < 0 or idx >= len(doc): return
 
-        page = doc.load_page(page_index)
+        page = doc.load_page(idx)
         pix = page.get_pixmap(dpi=150)
-        img_bytes = pix.tobytes("png")
-        photo_stream = io.BytesIO(img_bytes)
+        img = io.BytesIO(pix.tobytes("png"))
 
-        # تحديث الأزرار للصفحة الجديدة
-        keyboard = [
-            [
-                InlineKeyboardButton("⬅️ السابق", callback_data=f"page_{page_index - 1}"),
-                InlineKeyboardButton("التالي ➡️", callback_data=f"page_{page_index + 1}")
-            ]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
+        kb = [[
+            InlineKeyboardButton("⬅️ السابق", callback_data=f"p_{idx-1}"),
+            InlineKeyboardButton("التالي ➡️", callback_data=f"p_{idx+1}")
+        ]]
 
-        # تغيير الصورة الحالية بدون إرسال رسالة جديدة
         await query.edit_message_media(
-            media=InputMediaPhoto(media=photo_stream, caption="تم التقليب 🔄"),
-            reply_markup=reply_markup
+            media=InputMediaPhoto(media=img, caption=f"الصفحة الحالية: {idx}"),
+            reply_markup=InlineKeyboardMarkup(kb)
         )
         doc.close()
-    except Exception as e:
-        print(f"Button error: {e}")
+    except: pass
 
 # ---------------------------------------------------------
-# 4. التشغيل الأساسي
+# 4. التشغيل
 # ---------------------------------------------------------
 def main():
-    if not TOKEN:
-        print("خطأ فادح: لم يتم العثور على TELEGRAM_BOT_TOKEN.")
-        return
-
+    if not TOKEN: return
     keep_alive()
-    download_pdf_from_drive()
-
+    download_pdf()
+    
     app = Application.builder().token(TOKEN).build()
-    app.add_handler(CommandHandler("start", start_command))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_msg))
+    app.add_handler(CallbackQueryHandler(button))
     
-    # إضافة معالج الأزرار (ضروري لعمل التقليب)
-    app.add_handler(CallbackQueryHandler(button_callback))
-    
-    print("🤖 البوت يعمل الآن وينتظر الرسائل...")
     app.run_polling()
 
 if __name__ == "__main__":
